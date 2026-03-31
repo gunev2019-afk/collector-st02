@@ -28,6 +28,7 @@ UNIT_ID     = int(os.getenv("UNIT_ID", "1"))
 ADDR_1 = int(os.getenv("ADDR_1", "0"))  # AI1
 ADDR_2 = int(os.getenv("ADDR_2", "1"))  # AI2
 ADDR_3 = int(os.getenv("ADDR_3", "2"))  # AI3
+ADDR_4 = int(os.getenv("ADDR_3", "2"))  # AI4
 
 RAW_MAX  = float(os.getenv("RAW_MAX", "1000"))
 V_MAX    = float(os.getenv("V_MAX", "10"))
