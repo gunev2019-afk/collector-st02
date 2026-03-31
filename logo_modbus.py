@@ -86,7 +86,7 @@ def read_AI3(ip: str,
 def read_AI4(ip: str,
                  port: int,
                  unit_id: int,
-                 addr_AI3: int,
+                 addr_AI4: int,
                  timeout: float = 5.0) -> int:
    
     raws = read_input_registers(
