@@ -95,6 +95,14 @@ def main():
                 timeout=5.0,
             )
 
+            raw_AI4 = logo_modbus.read_AI4(
+                ip=LOGO_IP,
+                port=MODBUS_PORT,
+                unit_id=UNIT_ID,
+                addr_AI4=ADDR_4,
+                timeout=5.0,
+            )
+
             # --- 2) Конвертация в физические значения ---
             ready_AI1 = sensors.convert_temp_ai(
                 raw=raw_AI1,
@@ -112,6 +120,10 @@ def main():
                 raw=raw_AI3,
             )
 
+            ready_AI4 = sensors.convert_temp_rtd(
+                raw=raw_AI4,
+            )
+
             # --- 3) Лог в консоль ---
             now_str = dt.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
             print(
@@ -119,6 +131,7 @@ def main():
                 f"AI1={ready_AI1:6.2f} °C | "
                 f"AI2={ready_AI2:6.2f} % | "
                 f"AI3={ready_AI3:6.2f} °C"
+                f"AI4={ready_AI4:6.2f} °C"
             )
 
             # --- 4) Запись в Influx (если включено) ---
@@ -155,6 +168,17 @@ def main():
                         tag_channel="AI3",
                         name_value="температура",
                         value=ready_AI3,
+                    )
+
+                    influx_writer.write_measurements(
+                        client=client,
+                        write_api=write_api,
+                        bucket=INFLUX_BUCKET,
+                        org=INFLUX_ORG,
+                        name_location="lab",
+                        tag_channel="AI4",
+                        name_value="температура",
+                        value=ready_AI4,
                     )
                 except Exception as e:
                     print(f"[{dt.datetime.now():%Y-%m-%d %H:%M:%S}] ERROR write Influx: {repr(e)}")

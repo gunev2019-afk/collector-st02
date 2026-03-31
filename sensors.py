@@ -33,7 +33,6 @@ def convert_humidity(raw: int, raw_max: float, v_max: float) -> float:
 def convert_temp_rtd(raw: int) -> float:
     """
     3-й датчик: PT100/PT1000 через AM2 RTD.
-    Сейчас используем формулу, как в твоём скрипте:
         T = raw * 0.25 - 50
     """
     return raw * 0.25 - 50.0
