@@ -28,7 +28,9 @@ UNIT_ID     = int(os.getenv("UNIT_ID", "1"))
 ADDR_1 = int(os.getenv("ADDR_1", "0"))  # AI1
 ADDR_2 = int(os.getenv("ADDR_2", "1"))  # AI2
 ADDR_3 = int(os.getenv("ADDR_3", "2"))  # AI3
-ADDR_4 = int(os.getenv("ADDR_3", "2"))  # AI4
+ADDR_4 = int(os.getenv("ADDR_4", "3"))  # AI4
+ADDR_5 = int(os.getenv("ADDR_5", "4"))  # AI5
+ADDR_6 = int(os.getenv("ADDR_6", "5"))  # AI5
 
 RAW_MAX  = float(os.getenv("RAW_MAX", "1000"))
 V_MAX    = float(os.getenv("V_MAX", "10"))
@@ -104,6 +106,22 @@ def main():
                 timeout=5.0,
             )
 
+            raw_AI5 = logo_modbus.read_AI5(
+                ip=LOGO_IP,
+                port=MODBUS_PORT,
+                unit_id=UNIT_ID,
+                addr_AI5=ADDR_5,
+                timeout=5.0,
+            )
+
+            raw_AI6 = logo_modbus.read_AI6(
+                ip=LOGO_IP,
+                port=MODBUS_PORT,
+                unit_id=UNIT_ID,
+                addr_AI6=ADDR_6,
+                timeout=5.0,
+            )
+
             # --- 2) Конвертация в физические значения ---
             ready_AI1 = sensors.convert_temp_ai(
                 raw=raw_AI1,
@@ -125,14 +143,24 @@ def main():
                 raw=raw_AI4,
             )
 
+            ready_AI5 = sensors.convert_temp_rtd(
+                raw=raw_AI5,
+            )
+
+            ready_AI6 = sensors.convert_temp_rtd(
+                raw=raw_AI6,
+            )
+
             # --- 3) Лог в консоль ---
             now_str = dt.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
             print(
                 f"[{now_str}] "
                 f"AI1={ready_AI1:6.2f} °C | "
                 f"AI2={ready_AI2:6.2f} % | "
-                f"AI3={ready_AI3:6.2f} °C"
-                f"AI4={ready_AI4:6.2f} °C"
+                f"AI3={ready_AI3:6.2f} °C "
+                f"AI4={ready_AI4:6.2f} °C "
+                f"AI5={ready_AI5:6.2f} °C "
+                f"AI6={ready_AI6:6.2f} °C "
             )
 
             # --- 4) Запись в Influx (если включено) ---
@@ -180,6 +208,28 @@ def main():
                         tag_channel="AI4",
                         name_value="температура",
                         value=ready_AI4,
+                    )
+
+                    influx_writer.write_measurements(
+                        client=client,
+                        write_api=write_api,
+                        bucket=INFLUX_BUCKET,
+                        org=INFLUX_ORG,
+                        name_location="lab",
+                        tag_channel="AI5",
+                        name_value="температура",
+                        value=ready_AI5,
+                    )
+
+                    influx_writer.write_measurements(
+                        client=client,
+                        write_api=write_api,
+                        bucket=INFLUX_BUCKET,
+                        org=INFLUX_ORG,
+                        name_location="lab",
+                        tag_channel="AI6",
+                        name_value="температура",
+                        value=ready_AI6,
                     )
                 except Exception as e:
                     print(f"[{dt.datetime.now():%Y-%m-%d %H:%M:%S}] ERROR write Influx: {repr(e)}")

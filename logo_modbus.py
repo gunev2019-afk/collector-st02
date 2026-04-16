@@ -98,3 +98,35 @@ def read_AI4(ip: str,
         timeout=timeout,
     )
     return int(raws[0])
+
+def read_AI5(ip: str,
+                 port: int,
+                 unit_id: int,
+                 addr_AI5: int,
+                 timeout: float = 5.0) -> int:
+   
+    raws = read_input_registers(
+        ip=ip,
+        port=port,
+        unit_id=unit_id,
+        address=addr_AI5,
+        count=1,
+        timeout=timeout,
+    )
+    return int(raws[0])
+
+def read_AI6(ip: str,
+                 port: int,
+                 unit_id: int,
+                 addr_AI6: int,
+                 timeout: float = 5.0) -> int:
+   
+    raws = read_input_registers(
+        ip=ip,
+        port=port,
+        unit_id=unit_id,
+        address=addr_AI6,
+        count=1,
+        timeout=timeout,
+    )
+    return int(raws[0])
