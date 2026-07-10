@@ -2,56 +2,59 @@ from influxdb_client import InfluxDBClient, Point
 from influxdb_client.client.write_api import SYNCHRONOUS
 
 
-def init_influx(url: str, token: str, org: str):
-    """
-    Инициализация клиента InfluxDB с увеличенными таймаутами.
-    """
+class InfluxWriter:
+    def __init__(
+        self,
+        url: str,
+        token: str,
+        org: str,
+        bucket: str,
+    ):
+        self.org = org
+        self.bucket = bucket
 
-    client = InfluxDBClient(
-        url=url,
-        token=token,
-        org=org,
-        timeout=300,        # 30 секунд на ответ сервера
-        connect_timeout=5_000  # 5 секунд на подключение
-    )
+        self.client = InfluxDBClient(
+            url=url,
+            token=token,
+            org=org,
+        )
 
-    write_api = client.write_api(write_options=SYNCHRONOUS)
+        self.write_api = self.client.write_api(
+            write_options=SYNCHRONOUS
+        )
 
-    return client, write_api
+    def write_value(
+        self,
+        station: str,
+        layer: str,
+        sensor: str,
+        parameter: str,
+        value: float,
+    ) -> None:
+        """
+        Записывает один параметр.
 
+        parameter должен быть:
+        humidity или temperature
+        """
 
-def write_measurements(
-    client,
-    write_api,
-    bucket: str,
-    org: str,
-    name_location: str,
-    tag_channel: str,
-    name_value: str,
-    value: float,
-):
-    """
-    Записывает одно значение в InfluxDB.
-      name_location — measurement (например "lab")
-      tag_channel   — тег channel: "AI1", "AI2", "AI3"
-      name_value    — имя поля: "температура", "влажность" и т.п.
-      value         — числовое значение
-    """
-    point = (
-        Point(name_location)
-        .tag("channel", tag_channel)
-        .field(name_value, float(value))
-    )
+        if parameter not in ("humidity", "temperature"):
+            raise ValueError(
+                f"Неизвестный параметр для InfluxDB: {parameter}"
+            )
 
-    write_api.write(
-        bucket=bucket,
-        org=org,
-        record=point,
-    )
+        point = (
+            Point(station)
+            .tag("layer", layer)
+            .tag("sensor", sensor)
+            .field(parameter, float(value))
+        )
 
+        self.write_api.write(
+            bucket=self.bucket,
+            org=self.org,
+            record=point,
+        )
 
-def close_influx(client):
-    """
-    Аккуратно закрывает соединение с InfluxDB.
-    """
-    client.close()
+    def close(self) -> None:
+        self.client.close()

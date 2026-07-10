@@ -1,247 +1,489 @@
-# main.py
-
 import os
 import time
-import datetime as dt
-import signal
-import sys
+from datetime import datetime
 
-import logo_modbus
-import sensors
-import influx_writer
-
-# ---------- НОРМАЛЬНЫЙ ВЫВОД ЮНИКОДА ----------
-sys.stdout.reconfigure(encoding="utf-8", line_buffering=True)
-sys.stderr.reconfigure(encoding="utf-8", line_buffering=True)
-
-# ===== НАСТРОЙКИ ИЗ ОКРУЖЕНИЯ (для контейнера) =====
-INFLUX_URL    = os.getenv("INFLUX_URL", "http://localhost:8086")
-INFLUX_ORG    = os.getenv("INFLUX_ORG", "iot")
-INFLUX_BUCKET = os.getenv("INFLUX_BUCKET", "telemetry")
-INFLUX_TOKEN  = os.getenv("INFLUX_TOKEN")
-
-# на VPS эти переменные уже заданы в docker-compose
-LOGO_IP     = os.getenv("LOGO_IP", "192.168.1.10")
-MODBUS_PORT = int(os.getenv("LOGO_PORT", "502"))
-UNIT_ID     = int(os.getenv("UNIT_ID", "1"))
-
-ADDR_1 = int(os.getenv("ADDR_1", "0"))  # AI1
-ADDR_2 = int(os.getenv("ADDR_2", "1"))  # AI2
-ADDR_3 = int(os.getenv("ADDR_3", "2"))  # AI3
-ADDR_4 = int(os.getenv("ADDR_4", "3"))  # AI4
-ADDR_5 = int(os.getenv("ADDR_5", "4"))  # AI5
-ADDR_6 = int(os.getenv("ADDR_6", "5"))  # AI5
-
-RAW_MAX  = float(os.getenv("RAW_MAX", "1000"))
-V_MAX    = float(os.getenv("V_MAX", "10"))
-
-POLL_SEC = float(os.getenv("POLL_SEC", "1.0"))
-
-# флаг: писать ли в Influx
-WRITE_TO_INFLUX = True   # в контейнере True; если нужно, на ПК можешь поставить False
-
-running = True
+from logo_modbus import LogoModbus
+from influx_writer import InfluxWriter
 
 
-def handle_exit(signum, frame):
-    global running
-    print("\nПолучен сигнал завершения, останавливаюсь...")
-    running = False
+# ============================================================
+# Настройки из docker-compose.yml
+# ============================================================
+
+LOGO_IP = os.getenv("LOGO_IP", "192.168.2.10")
+LOGO_PORT = int(os.getenv("LOGO_PORT", "502"))
+UNIT_ID = int(os.getenv("UNIT_ID", "1"))
+
+RELAY_START_ADDRESS = int(
+    os.getenv("RELAY_START_ADDRESS", "8192")
+)
+RELAY_COUNT = int(
+    os.getenv("RELAY_COUNT", "12")
+)
+
+READ_INTERVAL_SEC = float(
+    os.getenv("POLL_SEC", "10")
+)
+RELAY_STABLE_DELAY_SEC = float(
+    os.getenv("RELAY_STABLE_DELAY_SEC", "0.5")
+)
+
+STATION = os.getenv("STATION", "st02")
+
+INFLUX_URL = os.getenv(
+    "INFLUX_URL",
+    "http://influxdb:8086",
+)
+INFLUX_TOKEN = os.getenv("INFLUX_TOKEN", "")
+INFLUX_ORG = os.getenv("INFLUX_ORG", "iot")
+INFLUX_BUCKET = os.getenv("INFLUX_BUCKET", "msk")
 
 
-signal.signal(signal.SIGINT, handle_exit)
-signal.signal(signal.SIGTERM, handle_exit)
+# ============================================================
+# Карта реле, датчиков, слоев и аналоговых входов
+# ============================================================
+
+CHANNELS = {
+    # Слой 1
+    # S1: Q1 — влажность, Q2 — температура
+    # S2: Q3 — влажность, Q4 — температура
+
+    "Q1": {
+        "sensor": "S1",
+        "layer": "layer1",
+        "parameter": "humidity",
+        "ai": 1,
+    },
+    "Q2": {
+        "sensor": "S1",
+        "layer": "layer1",
+        "parameter": "temperature",
+        "ai": 2,
+    },
+    "Q3": {
+        "sensor": "S2",
+        "layer": "layer1",
+        "parameter": "humidity",
+        "ai": 1,
+    },
+    "Q4": {
+        "sensor": "S2",
+        "layer": "layer1",
+        "parameter": "temperature",
+        "ai": 2,
+    },
+
+    # Слой 2
+    # S3: Q5 — влажность, Q6 — температура
+    # S4: Q7 — влажность, Q8 — температура
+
+    "Q5": {
+        "sensor": "S3",
+        "layer": "layer2",
+        "parameter": "humidity",
+        "ai": 3,
+    },
+    "Q6": {
+        "sensor": "S3",
+        "layer": "layer2",
+        "parameter": "temperature",
+        "ai": 4,
+    },
+    "Q7": {
+        "sensor": "S4",
+        "layer": "layer2",
+        "parameter": "humidity",
+        "ai": 3,
+    },
+    "Q8": {
+        "sensor": "S4",
+        "layer": "layer2",
+        "parameter": "temperature",
+        "ai": 4,
+    },
+
+    # Слой 3
+    # S5: Q9 — влажность, Q10 — температура
+    # S6: Q11 — влажность, Q12 — температура
+
+    "Q9": {
+        "sensor": "S5",
+        "layer": "layer3",
+        "parameter": "humidity",
+        "ai": 3,
+    },
+    "Q10": {
+        "sensor": "S5",
+        "layer": "layer3",
+        "parameter": "temperature",
+        "ai": 4,
+    },
+    "Q11": {
+        "sensor": "S6",
+        "layer": "layer3",
+        "parameter": "humidity",
+        "ai": 3,
+    },
+    "Q12": {
+        "sensor": "S6",
+        "layer": "layer3",
+        "parameter": "temperature",
+        "ai": 4,
+    },
+}
 
 
-def main():
-    print(
-        f"Starting modular LOGO reader (IP: {LOGO_IP}, Unit: {UNIT_ID}, "
-        f"AI1={ADDR_1}, AI2={ADDR_2}, AI3={ADDR_3}, poll={POLL_SEC}s)"
+def read_stable_relays(
+    logo: LogoModbus,
+) -> dict[str, bool] | None:
+    """
+    Дважды читает Q1-Q12.
+
+    Если реле изменились между чтениями,
+    текущий цикл считается нестабильным.
+    """
+
+    relays_1 = logo.read_relays(
+        RELAY_START_ADDRESS,
+        RELAY_COUNT,
     )
 
-    # инициализируем Influx только если надо писать
-    if WRITE_TO_INFLUX:
-        if not INFLUX_TOKEN:
-            raise SystemExit("Error: INFLUX_TOKEN не задан, а WRITE_TO_INFLUX=True")
-        client, write_api = influx_writer.init_influx(
-            url=INFLUX_URL,
-            token=INFLUX_TOKEN,
-            org=INFLUX_ORG,
+    time.sleep(RELAY_STABLE_DELAY_SEC)
+
+    relays_2 = logo.read_relays(
+        RELAY_START_ADDRESS,
+        RELAY_COUNT,
+    )
+
+    if relays_1 != relays_2:
+        return None
+
+    return relays_2
+
+
+def print_relays(
+    relays: dict[str, bool],
+) -> None:
+    print("Реле:")
+
+    for relay_name, state in relays.items():
+        print(
+            f"{relay_name}: "
+            f"{'ON' if state else 'OFF'}"
         )
-    else:
-        client, write_api = None, None
 
-    while running:
-        try:
-            # --- 1) Чтение сырых данных с трёх каналов LOGO ---
-            raw_AI1 = logo_modbus.read_AI1(
-                ip=LOGO_IP,
-                port=MODBUS_PORT,
-                unit_id=UNIT_ID,
-                addr_AI1=ADDR_1,
-                timeout=5.0,
+
+def get_active_channels(
+    relays: dict[str, bool],
+) -> list[dict]:
+    """
+    Формирует список каналов,
+    реле которых сейчас включены.
+    """
+
+    active_channels = []
+
+    for relay_name, channel in CHANNELS.items():
+        if relays.get(relay_name, False):
+            active_channels.append(
+                {
+                    "relay": relay_name,
+                    "sensor": channel["sensor"],
+                    "layer": channel["layer"],
+                    "parameter": channel["parameter"],
+                    "ai": channel["ai"],
+                }
             )
 
-            raw_AI2 = logo_modbus.read_AI2(
-                ip=LOGO_IP,
-                port=MODBUS_PORT,
-                unit_id=UNIT_ID,
-                addr_AI2=ADDR_2,
-                timeout=5.0,
+    return active_channels
+
+
+def find_conflicting_ai(
+    active_channels: list[dict],
+) -> set[int]:
+    """
+    Возвращает номера AI, на которых одновременно
+    активны два или более канала.
+
+    Конфликт блокирует только конкретный AI,
+    а не весь цикл.
+    """
+
+    channels_by_ai: dict[int, list[dict]] = {}
+
+    for channel in active_channels:
+        ai_number = channel["ai"]
+
+        if ai_number not in channels_by_ai:
+            channels_by_ai[ai_number] = []
+
+        channels_by_ai[ai_number].append(channel)
+
+    conflicting_ai = set()
+
+    for ai_number, channels in channels_by_ai.items():
+        if len(channels) > 1:
+            conflicting_ai.add(ai_number)
+
+            relay_names = ", ".join(
+                channel["relay"]
+                for channel in channels
             )
 
-            raw_AI3 = logo_modbus.read_AI3(
-                ip=LOGO_IP,
-                port=MODBUS_PORT,
-                unit_id=UNIT_ID,
-                addr_AI3=ADDR_3,
-                timeout=5.0,
-            )
-
-            raw_AI4 = logo_modbus.read_AI4(
-                ip=LOGO_IP,
-                port=MODBUS_PORT,
-                unit_id=UNIT_ID,
-                addr_AI4=ADDR_4,
-                timeout=5.0,
-            )
-
-            raw_AI5 = logo_modbus.read_AI5(
-                ip=LOGO_IP,
-                port=MODBUS_PORT,
-                unit_id=UNIT_ID,
-                addr_AI5=ADDR_5,
-                timeout=5.0,
-            )
-
-            raw_AI6 = logo_modbus.read_AI6(
-                ip=LOGO_IP,
-                port=MODBUS_PORT,
-                unit_id=UNIT_ID,
-                addr_AI6=ADDR_6,
-                timeout=5.0,
-            )
-
-            # --- 2) Конвертация в физические значения ---
-            ready_AI1 = sensors.convert_temp_ai(
-                raw=raw_AI1,
-                raw_max=RAW_MAX,
-                v_max=V_MAX,
-            )
-
-            ready_AI2 = sensors.convert_humidity(
-                raw=raw_AI2,
-                raw_max=RAW_MAX,
-                v_max=V_MAX,
-            )
-
-            ready_AI3 = sensors.convert_temp_rtd(
-                raw=raw_AI3,
-            )
-
-            ready_AI4 = sensors.convert_temp_rtd(
-                raw=raw_AI4,
-            )
-
-            ready_AI5 = sensors.convert_temp_rtd(
-                raw=raw_AI5,
-            )
-
-            ready_AI6 = sensors.convert_temp_rtd(
-                raw=raw_AI6,
-            )
-
-            # --- 3) Лог в консоль ---
-            now_str = dt.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
             print(
-                f"[{now_str}] "
-                f"AI1={ready_AI1:6.2f} °C | "
-                f"AI2={ready_AI2:6.2f} % | "
-                f"AI3={ready_AI3:6.2f} °C "
-                f"AI4={ready_AI4:6.2f} °C "
-                f"AI5={ready_AI5:6.2f} °C "
-                f"AI6={ready_AI6:6.2f} °C "
+                f"КОНФЛИКТ AI{ai_number}: "
+                f"активны {relay_names}. "
+                f"Каналы AI{ai_number} пропущены."
             )
 
-            # --- 4) Запись в Influx (если включено) ---
-            if WRITE_TO_INFLUX and client is not None:
-                try:
-                    influx_writer.write_measurements(
-                        client=client,
-                        write_api=write_api,
-                        bucket=INFLUX_BUCKET,
-                        org=INFLUX_ORG,
-                        name_location="lab",
-                        tag_channel="AI1",
-                        name_value="температура",
-                        value=ready_AI1,
-                    )
+    return conflicting_ai
 
-                    influx_writer.write_measurements(
-                        client=client,
-                        write_api=write_api,
-                        bucket=INFLUX_BUCKET,
-                        org=INFLUX_ORG,
-                        name_location="lab",
-                        tag_channel="AI2",
-                        name_value="влажность",
-                        value=ready_AI2,
-                    )
 
-                    influx_writer.write_measurements(
-                        client=client,
-                        write_api=write_api,
-                        bucket=INFLUX_BUCKET,
-                        org=INFLUX_ORG,
-                        name_location="lab",
-                        tag_channel="AI3",
-                        name_value="температура",
-                        value=ready_AI3,
-                    )
+def convert_value(
+    parameter: str,
+    raw: int,
+) -> float:
+    """
+    Перевод RAW в физическое значение.
+    """
 
-                    influx_writer.write_measurements(
-                        client=client,
-                        write_api=write_api,
-                        bucket=INFLUX_BUCKET,
-                        org=INFLUX_ORG,
-                        name_location="lab",
-                        tag_channel="AI4",
-                        name_value="температура",
-                        value=ready_AI4,
-                    )
+    if parameter == "humidity":
+        return raw / 10.0
 
-                    influx_writer.write_measurements(
-                        client=client,
-                        write_api=write_api,
-                        bucket=INFLUX_BUCKET,
-                        org=INFLUX_ORG,
-                        name_location="lab",
-                        tag_channel="AI5",
-                        name_value="температура",
-                        value=ready_AI5,
-                    )
+    if parameter == "temperature":
+        return raw * 10.0 * 0.016 - 45.0
 
-                    influx_writer.write_measurements(
-                        client=client,
-                        write_api=write_api,
-                        bucket=INFLUX_BUCKET,
-                        org=INFLUX_ORG,
-                        name_location="lab",
-                        tag_channel="AI6",
-                        name_value="температура",
-                        value=ready_AI6,
-                    )
-                except Exception as e:
-                    print(f"[{dt.datetime.now():%Y-%m-%d %H:%M:%S}] ERROR write Influx: {repr(e)}")
+    raise ValueError(
+        f"Неизвестный параметр: {parameter}"
+    )
 
-        except Exception as e:
-            print(f"[{dt.datetime.now():%Y-%m-%d %H:%M:%S}] ERROR MAIN: {repr(e)}")
 
-        time.sleep(POLL_SEC)
+def process_cycle(
+    logo: LogoModbus,
+    influx: InfluxWriter,
+) -> None:
+    """
+    Выполняет один полный цикл чтения и записи.
+    """
 
-    if WRITE_TO_INFLUX and client is not None:
-        influx_writer.close_influx(client)
-    print("Скрипт завершил работу")
+    print("=" * 60)
+    print(
+        datetime.now().strftime(
+            "%d.%m.%Y %H:%M:%S"
+        )
+    )
+
+    relays_before = read_stable_relays(logo)
+
+    if relays_before is None:
+        print(
+            "Реле переключаются. "
+            "Цикл пропущен."
+        )
+        return
+
+    print_relays(relays_before)
+    print()
+
+    active_channels_before = get_active_channels(
+        relays_before
+    )
+
+    if not active_channels_before:
+        print(
+            "Активные каналы не найдены. "
+            "Цикл пропущен."
+        )
+        return
+
+    conflicting_ai = find_conflicting_ai(
+        active_channels_before
+    )
+
+    valid_channels = [
+        channel
+        for channel in active_channels_before
+        if channel["ai"] not in conflicting_ai
+    ]
+
+    if not valid_channels:
+        print(
+            "Все активные каналы находятся "
+            "в конфликте. Запись не выполняется."
+        )
+        return
+
+    values_to_write = []
+
+    for channel in valid_channels:
+        relay = channel["relay"]
+        sensor = channel["sensor"]
+        layer = channel["layer"]
+        parameter = channel["parameter"]
+        ai_number = channel["ai"]
+
+        raw = logo.read_ai_raw(ai_number)
+
+        value = convert_value(
+            parameter=parameter,
+            raw=raw,
+        )
+
+        values_to_write.append(
+            {
+                "relay": relay,
+                "sensor": sensor,
+                "layer": layer,
+                "parameter": parameter,
+                "ai": ai_number,
+                "raw": raw,
+                "value": value,
+            }
+        )
+
+    relays_after = logo.read_relays(
+        RELAY_START_ADDRESS,
+        RELAY_COUNT,
+    )
+
+    active_channels_after = get_active_channels(
+        relays_after
+    )
+
+    if (
+        relays_before != relays_after
+        or active_channels_before
+        != active_channels_after
+    ):
+        print(
+            "Реле изменились во время чтения AI. "
+            "Все данные текущего цикла отброшены."
+        )
+        return
+
+    for item in values_to_write:
+        relay = item["relay"]
+        sensor = item["sensor"]
+        layer = item["layer"]
+        parameter = item["parameter"]
+        ai_number = item["ai"]
+        raw = item["raw"]
+        value = item["value"]
+
+        print(
+            f"{relay} → {parameter} → "
+            f"{layer} → {sensor} → "
+            f"AI{ai_number} raw={raw}, "
+            f"value={value:.2f}"
+        )
+
+        try:
+            influx.write_value(
+                station=STATION,
+                layer=layer,
+                sensor=sensor,
+                parameter=parameter,
+                value=value,
+            )
+
+            print(
+                f"Записано в InfluxDB: "
+                f"{parameter} / {layer} / {sensor}"
+            )
+
+        except Exception as error:
+            print(
+                f"Ошибка записи {relay} "
+                f"в InfluxDB: {error}"
+            )
+
+            # Ошибка одного канала не прерывает
+            # обработку остальных каналов.
+            continue
+
+
+def create_logo() -> LogoModbus:
+    """
+    Создает и открывает соединение с LOGO.
+    """
+
+    logo = LogoModbus(
+        ip=LOGO_IP,
+        port=LOGO_PORT,
+        unit_id=UNIT_ID,
+        timeout=10.0,
+    )
+
+    logo.connect()
+
+    return logo
+
+
+def main() -> None:
+    logo = None
+
+    influx = InfluxWriter(
+        url=INFLUX_URL,
+        token=INFLUX_TOKEN,
+        org=INFLUX_ORG,
+        bucket=INFLUX_BUCKET,
+    )
+
+    while True:
+        try:
+            if logo is None:
+                print(
+                    f"Подключаюсь к LOGO "
+                    f"{LOGO_IP}:{LOGO_PORT}..."
+                )
+
+                logo = create_logo()
+
+                print("LOGO подключен")
+
+            process_cycle(
+                logo=logo,
+                influx=influx,
+            )
+
+            time.sleep(READ_INTERVAL_SEC)
+
+        except KeyboardInterrupt:
+            print("\nОстановка программы")
+            break
+
+        except Exception as error:
+            print(
+                f"Ошибка связи или чтения LOGO: "
+                f"{error}"
+            )
+            print(
+                "Программа продолжает работу. "
+                "Переподключаюсь к LOGO..."
+            )
+
+            try:
+                if logo is not None:
+                    logo.close()
+            except Exception:
+                pass
+
+            logo = None
+
+            time.sleep(READ_INTERVAL_SEC)
+
+    try:
+        if logo is not None:
+            logo.close()
+            print("Соединение с LOGO закрыто")
+    except Exception:
+        pass
+
+    try:
+        influx.close()
+        print("Соединение с InfluxDB закрыто")
+    except Exception:
+        pass
 
 
 if __name__ == "__main__":
