@@ -251,7 +251,7 @@ def convert_value(
         return raw / 10.0
 
     if parameter == "temperature":
-        return raw/100.0 * 12 - 40.0
+        return raw/10.0 * 12 - 40.0
 
     raise ValueError(
         f"Неизвестный параметр: {parameter}"
